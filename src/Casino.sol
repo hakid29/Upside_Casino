@@ -2,16 +2,15 @@
 pragma solidity ^0.8.13;
 
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import "@openzeppelin/contracts/access/OwnableUpgradeable.sol";
-import "@openzeppelin/contracts/proxy/utils/Initializable.sol";
-import "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 
 contract Casino is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     enum State {
         Ready,      // before game start
-        Running,    // running game
-        Commit,     // commit time
-        End         // after game runs
+        BetAndReveal,    // betting or reveal time
+        End         // after reveal
     }
 
     struct Game {
@@ -22,26 +21,25 @@ contract Casino is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         uint256 totalBetBalance;
         uint256 answer;
         uint256 startBlock;
-        uint256 runningTerm;
+        uint256 bettingTerm; // betting time
+        uint256 revealTerm; // reveal time
         ERC20 token;
     }
 
     struct Bettor {
         uint256 guess;
         uint256 betAmount;
-        uint256 isWinner;
+        bool isWinner;
+        uint256 commit;
+        bool revealed;
     }
 
-    address public constant ADMIN = 0xDa980361A953c52bBd4a057310771b98C01a51d4;
     uint256 public gameCount;
-    uint256 public gameFee = 2; // 2% fee
-    ERC20 public token;
+    uint256 public constant gameFee = 1; // 0.1% fee
 
     mapping(uint256 => Game) public games; // gameId => State
-    mapping(uint256 => mapping(uint256 => address)) public matchBettor;
-    mapping(uint256 => mapping(address => Bettor)) public Bettors;
-
-    event logStart(uint);
+    mapping(uint256 => mapping(address => Bettor)) public Bettors; // gameId => bettor's address => Bettor
+    mapping(uint256 => mapping(uint256 => uint256)) public EachGuessAmount; // gameId => guess => totalAmount
 
     constructor() {
         _disableInitializers();
@@ -58,7 +56,7 @@ contract Casino is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     }
 
     modifier isRunning(uint256 gameId){
-        require(games[gameId].state == State.Running);
+        require(games[gameId].state == State.BetAndReveal);
         _;
     }
 
@@ -67,11 +65,12 @@ contract Casino is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         _;
     }
 
-    function create(address token_, uint256 runningTerm_) public returns(uint256) {
+    function create(address token_, uint256 bettingTerm_, uint256 revealTerm_) public returns(uint256) {
         Game memory newGame;
 
         newGame.state = State.Ready;
-        newGame.runningTerm = runningTerm_;
+        newGame.bettingTerm = bettingTerm_;
+        newGame.revealTerm = revealTerm_;
         newGame.creator = msg.sender;
         newGame.token = ERC20(token_);
 
@@ -83,43 +82,83 @@ contract Casino is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     function start(uint256 gameId) public isReady(gameId) {
         require(msg.sender == games[gameId].creator, "only creator of the game can start");
 
-        games[gameId].state = State.Running;
+        games[gameId].state = State.BetAndReveal;
         games[gameId].startBlock = block.number;
-        emit logStart(gameId);
     }
 
-    function bet(uint256 gameId, address token_, uint256 amount, uint256 guess_) public isRunning(gameId) payable {
+    function bet(uint256 gameId, uint256 amount, uint256 guess_, uint256 commit_) public isRunning(gameId) {
+        // block.number - startblock < (betting time)
+        require(block.number - games[gameId].startBlock < games[gameId].bettingTerm, "now is not betting term");
         require(games[gameId].creator != address(0), "game doesn't exist");
-        require(games[gameId].token == ERC20(token_), "wrong token");
-        require(amount > 0 && amount < ERC20(token_).balanceOf(address(this)), "Invalid amount");
+
+        ERC20 token_ = games[gameId].token;
+
         // Check
-        require(ERC20(token_).allowance(msg.sender, address(this)) >= amount, "Invalid allowance");
+        require(amount > 0 && amount < token_.balanceOf(address(this)), "Invalid amount");
+        require(token_.allowance(msg.sender, address(this)) >= amount, "Invalid allowance");
         require(Bettors[gameId][msg.sender].betAmount == 0, "you can bet only once");
 
         // Effect
-        matchBettor[gameId][games[gameId].totalBettor] = msg.sender; // userId in game
-        Bettors[gameId][msg.sender].betAmount = amount;
-        Bettors[gameId][msg.sender].guess = guess_;
+        Bettor memory bettor;
+        bettor.betAmount = amount;
+        bettor.guess = guess_;
+        bettor.commit = commit_;
+        Bettors[gameId][msg.sender] = bettor;
+
         games[gameId].totalBetBalance += amount;
+        games[gameId].totalBettor++;
+
+        EachGuessAmount[gameId][guess_] += amount;
 
         // Interact
-        ERC20(token_).transferFrom(msg.sender, address(this), amount);
+        token_.transferFrom(msg.sender, address(this), amount);
     }
 
-    function draw(uint256 gameId) public returns(uint256) {
-        require(msg.sender == ADMIN, "you are not admin");
-        require(block.number - games[gameId].startBlock >= games[gameId].runningTerm, "bet isn't finished");
+    function reveal(uint256 gameId, uint256 commit_) public isRunning(gameId) {
+        // (betting time) <= block.number - startblock <= (betting time) + (reveal time)
+        require(block.number - games[gameId].startBlock >= games[gameId].bettingTerm
+        && block.number - games[gameId].startBlock < games[gameId].bettingTerm + games[gameId].revealTerm, "now is not reveal term");
+        require(Bettors[gameId][msg.sender].commit == commit_, "wrong commit");
 
+        games[gameId].answer = uint256(keccak256(abi.encodePacked(games[gameId].answer, commit_))); // reveal
+        Bettors[gameId][msg.sender].revealed = true;
+    }
 
+    function draw(uint256 gameId) public isRunning(gameId) {
+        // block.number - startblock > (betting time) + (reveal time)
+        require(block.number - games[gameId].startBlock >= games[gameId].bettingTerm + games[gameId].revealTerm, "reveal isn't finished");
+        require(games[gameId].answer > 10, "already draw");
+
+        uint256 answer_ = (games[gameId].answer % 10) + 1;
+        games[gameId].answer = answer_; // guess >= 1
+        games[gameId].state = State.End;
+
+        address creator_ = games[gameId].creator;
+        games[gameId].token.transfer(creator_, EachGuessAmount[gameId][answer_] * 2 / 10000); // 0.02% fee to creator
     }
 
     function claim(uint256 gameId) public isEnd(gameId) {
+        Bettor memory bettor = Bettors[gameId][msg.sender];
+        uint256 answer_;
+        uint256 reward;
 
+        if (bettor.revealed) { // those who didn't reveal can't claim
+            if (bettor.guess == games[gameId].answer) {
+                Bettors[gameId][msg.sender].guess = 0; // prevent double claim
+
+                answer_ = games[gameId].answer;
+                reward = games[gameId].totalBetBalance * bettor.betAmount / EachGuessAmount[gameId][answer_];
+                games[gameId].token.transfer(msg.sender, reward * (1000 - gameFee) / 1000);
+            } else if (games[gameId].totalBetBalance == 0) {
+                // there is no winner
+                games[gameId].token.transfer(msg.sender, bettor.betAmount * (1000 - gameFee) / 1000);
+            }
+        }
     }
 
     function multicall(
         bytes[] calldata calls
-    ) external virtual returns (bytes[] memory results) {
+    ) external returns (bytes[] memory results) {
         results = new bytes[](calls.length);
         for (uint256 i = 0; i < calls.length; i++) {
             (bool success, bytes memory result) = address(this).delegatecall(calls[i]);
@@ -135,5 +174,3 @@ contract Casino is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         override
     {}
 }
-
-// forge create --private-key 0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d src/Casino.sol:Casino
