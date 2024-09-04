@@ -5,18 +5,19 @@ import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 
-contract Casino is Initializable, OwnableUpgradeable, UUPSUpgradeable {
+contract Casino is Initializable, OwnableUpgradeable, UUPSUpgradeable, PausableUpgradeable {
     enum State {
-        Ready,      // before game start
+        Ready,           // before game start
         BetAndReveal,    // betting or reveal time
-        End         // after reveal
+        End              // after reveal
     }
 
     struct Game {
         State state;
         address creator;
-        bool draw; // whether the game has drawed, if it has drawed, it can be End state
+        bool draw;
         uint256 totalBettor;
         uint256 totalBetBalance;
         uint256 answer;
@@ -36,9 +37,10 @@ contract Casino is Initializable, OwnableUpgradeable, UUPSUpgradeable {
 
     uint256 public gameCount;
     uint256 public constant gameFee = 1; // 0.1% fee
+    uint256 public lastPause;
 
-    mapping(uint256 => Game) public games; // gameId => State
-    mapping(uint256 => mapping(address => Bettor)) public Bettors; // gameId => bettor's address => Bettor
+    mapping(uint256 => Game) public games;                                  // gameId => State
+    mapping(uint256 => mapping(address => Bettor)) public Bettors;          // gameId => bettor's address => Bettor
     mapping(uint256 => mapping(uint256 => uint256)) public EachGuessAmount; // gameId => guess => totalAmount
 
     constructor() {
@@ -65,7 +67,7 @@ contract Casino is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         _;
     }
 
-    function create(address token_, uint256 bettingTerm_, uint256 revealTerm_) public returns(uint256) {
+    function create(address token_, uint256 bettingTerm_, uint256 revealTerm_) public whenNotPaused returns(uint256) {
         Game memory newGame;
 
         newGame.state = State.Ready;
@@ -79,14 +81,14 @@ contract Casino is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         return gameCount-1; // gameId
     }
 
-    function start(uint256 gameId) public isReady(gameId) {
+    function start(uint256 gameId) public isReady(gameId) whenNotPaused {
         require(msg.sender == games[gameId].creator, "only creator of the game can start");
 
         games[gameId].state = State.BetAndReveal;
         games[gameId].startBlock = block.number;
     }
 
-    function bet(uint256 gameId, uint256 amount, uint256 guess_, uint256 commit_) public isRunning(gameId) {
+    function bet(uint256 gameId, uint256 amount, uint256 guess_, uint256 commit_) public isRunning(gameId) whenNotPaused {
         // block.number - startblock < (betting time)
         require(block.number - games[gameId].startBlock < games[gameId].bettingTerm, "now is not betting term");
         require(games[gameId].creator != address(0), "game doesn't exist");
@@ -114,7 +116,7 @@ contract Casino is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         token_.transferFrom(msg.sender, address(this), amount);
     }
 
-    function reveal(uint256 gameId, uint256 commit_) public isRunning(gameId) {
+    function reveal(uint256 gameId, uint256 commit_) public isRunning(gameId) whenNotPaused {
         // (betting time) <= block.number - startblock <= (betting time) + (reveal time)
         require(block.number - games[gameId].startBlock >= games[gameId].bettingTerm
         && block.number - games[gameId].startBlock < games[gameId].bettingTerm + games[gameId].revealTerm, "now is not reveal term");
@@ -124,7 +126,7 @@ contract Casino is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         Bettors[gameId][msg.sender].revealed = true;
     }
 
-    function draw(uint256 gameId) public isRunning(gameId) {
+    function draw(uint256 gameId) public isRunning(gameId) whenNotPaused {
         // block.number - startblock > (betting time) + (reveal time)
         require(block.number - games[gameId].startBlock >= games[gameId].bettingTerm + games[gameId].revealTerm, "reveal isn't finished");
         require(games[gameId].answer > 10, "already draw");
@@ -137,7 +139,7 @@ contract Casino is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         games[gameId].token.transfer(creator_, EachGuessAmount[gameId][answer_] * 2 / 10000); // 0.02% fee to creator
     }
 
-    function claim(uint256 gameId) public isEnd(gameId) {
+    function claim(uint256 gameId) public isEnd(gameId) whenNotPaused {
         Bettor memory bettor = Bettors[gameId][msg.sender];
         uint256 answer_;
         uint256 reward;
@@ -150,7 +152,7 @@ contract Casino is Initializable, OwnableUpgradeable, UUPSUpgradeable {
                 reward = games[gameId].totalBetBalance * bettor.betAmount / EachGuessAmount[gameId][answer_];
                 games[gameId].token.transfer(msg.sender, reward * (1000 - gameFee) / 1000);
             } else if (games[gameId].totalBetBalance == 0) {
-                // there is no winner
+                // if there is no winner
                 games[gameId].token.transfer(msg.sender, bettor.betAmount * (1000 - gameFee) / 1000);
             }
         }
@@ -165,6 +167,20 @@ contract Casino is Initializable, OwnableUpgradeable, UUPSUpgradeable {
 
             require(success, "Call failed!");
             results[i] = result;
+        }
+    }
+
+    function pause() external onlyOwner {
+        _pause();
+        lastPause = block.number;
+    }
+
+    function unpause() external onlyOwner {
+        _unpause();
+        uint256 pausedBlock = block.number - lastPause;
+
+        for (uint i = 0; i < gameCount; i++) {
+            games[i].startBlock += pausedBlock;
         }
     }
 

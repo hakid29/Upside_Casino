@@ -63,7 +63,7 @@ contract CasinoTest is Test {
     function testCreateAndStart() public {
         vm.startPrank(creator);
 
-        uint256 myGameId = proxyForTest.create(address(bc), 100, 30);
+        uint256 myGameId = proxyForTest.create(address(bc), 300, 100);
         assertEq(myGameId == 0, true); // first gameId is 0
 
         vm.stopPrank();
@@ -72,7 +72,7 @@ contract CasinoTest is Test {
     function testBetTokenAmount() public {
         vm.startPrank(creator);
 
-        uint256 myGameId = proxyForTest.create(address(bc), 100, 30);
+        uint256 myGameId = proxyForTest.create(address(bc), 300, 100);
         proxyForTest.start(myGameId);
 
         vm.stopPrank();
@@ -89,7 +89,7 @@ contract CasinoTest is Test {
     function testDraw() public {
         vm.startPrank(creator);
 
-        uint256 myGameId = proxyForTest.create(address(bc), 100, 30);
+        uint256 myGameId = proxyForTest.create(address(bc), 300, 100);
         proxyForTest.start(myGameId);
 
         vm.stopPrank();
@@ -100,16 +100,16 @@ contract CasinoTest is Test {
         bc.approve(address(proxy), 1 ether);
         proxyForTest.bet(myGameId, 1 ether, 1, user1Commit);
 
-        vm.roll(block.number + 50);
+        vm.roll(block.number + 150);
 
         vm.expectRevert("now is not reveal term");
         proxyForTest.reveal(myGameId, user1Commit);
 
-        vm.roll(block.number + 50);
+        vm.roll(block.number + 150);
 
         proxyForTest.reveal(myGameId, user1Commit);
 
-        vm.roll(block.number + 30);
+        vm.roll(block.number + 100);
 
         proxyForTest.draw(myGameId);
 
@@ -175,12 +175,12 @@ contract CasinoTest is Test {
     function testAll() public {
         vm.startPrank(creator);
 
-        uint256 myGameId = proxyForTest.create(address(bc), 100, 30);
+        uint256 myGameId = proxyForTest.create(address(bc), 300, 100);
         proxyForTest.start(myGameId);
 
         vm.stopPrank();
 
-        // each user bets 1~10 (winner must be 1 person)
+        // each user bets 1~10 (there is 1 winner)
         for (uint i = 0; i < 10; i++) {
             vm.startPrank(users[i]);
 
@@ -191,8 +191,17 @@ contract CasinoTest is Test {
             vm.stopPrank();
         }
 
-        vm.roll(block.number + 100);
+        vm.roll(block.number + 300);
 
+        vm.startPrank(ADMIN);
+        proxyForTest.pause();
+        vm.stopPrank();
+
+        vm.roll(block.number + 300);
+
+        vm.startPrank(ADMIN);
+        proxyForTest.unpause();
+        vm.stopPrank();
         // each user reveals
         for (uint i = 0; i < 10; i++) {
             vm.startPrank(users[i]);
@@ -203,7 +212,7 @@ contract CasinoTest is Test {
             vm.stopPrank();
         }
 
-        vm.roll(block.number + 30);
+        vm.roll(block.number + 100);
 
         proxyForTest.draw(myGameId);
         uint256 answer = proxyForTest.games(myGameId).answer;
@@ -222,12 +231,14 @@ contract CasinoTest is Test {
         console.log("after claim : ", bc.balanceOf(winner));
         
         // Winner
-        vm.assertEq(bc.balanceOf(winner), (1000-1)*1e18 + (10*1e18) * (1000 - 1) / 1000);
+        uint256 winnerBetAmount = proxyForTest.Bettors(myGameId, winner).betAmount;
+        uint256 gameTotalBetBalance = proxyForTest.games(myGameId).totalBetBalance;
+        vm.assertEq(bc.balanceOf(winner), 1000*1e18 - winnerBetAmount + gameTotalBetBalance * (1000 - proxyForTest.gameFee()) / 1000);
 
         // Losers
         for (uint i = 0; i < 10; i++) {
-            if (i != answer + 1) {
-                vm.assertEq(bc.balanceOf(users[0]), (1000 - 1)*1e18);
+            if (i != answer - 1) {
+                vm.assertEq(bc.balanceOf(users[i]), 1000*1e18 - proxyForTest.Bettors(myGameId, users[i]).betAmount);
             }
         }
     }

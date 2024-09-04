@@ -57,5 +57,9 @@ interface ICasino {
 
     function claim(uint256 gameId) external;
 
+    function pause() external;
+
+    function unpause() external;
+
     function multicall(bytes[] calldata calls) external returns (bytes[] memory results);
 }
