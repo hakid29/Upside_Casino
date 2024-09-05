@@ -23,7 +23,7 @@ contract CasinoTest is Test {
     address[10] users;
     address user1;
 
-    address ADMIN = 0xDa980361A953c52bBd4a057310771b98C01a51d4;
+    address constant ADMIN = 0xDa980361A953c52bBd4a057310771b98C01a51d4;
 
     function setUp() public {
         casino = new Casino();
@@ -36,27 +36,25 @@ contract CasinoTest is Test {
             users[i] = address(uint160(0x11 + i));
             bc.transfer(users[i], 1000 ether);
         }
-        bc.transfer(address(proxy), 10000 ether);
 
         user1 = users[0];
     }
 
-    function testAdminTryToUpgrade() public {
+    function testUpgrade() public {
         Casino casino2 = new Casino();
 
         vm.startPrank(ADMIN);
         (bool success,) = address(proxy).call(abi.encodeWithSignature("upgradeToAndCall(address,bytes)", address(casino2), ""));
         require(success);
         vm.stopPrank();
-    }
 
-    function testNotAdminTryToUpgrade() public {
-        Casino casino2 = new Casino();
+
+        Casino casino3 = new Casino();
 
         vm.expectRevert();
         vm.startPrank(address(this));
-        (bool success,) = address(proxy).call(abi.encodeWithSignature("upgradeToAndCall(address,bytes)", address(casino2), ""));
-        require(success);
+        (bool success2,) = address(proxy).call(abi.encodeWithSignature("upgradeToAndCall(address,bytes)", address(casino3), ""));
+        require(success2);
         vm.stopPrank();
     }
 
@@ -66,10 +64,13 @@ contract CasinoTest is Test {
         uint256 myGameId = proxyForTest.create(address(bc), 300, 100);
         assertEq(myGameId == 0, true); // first gameId is 0
 
+        proxyForTest.start(myGameId);
+        assertEq(proxyForTest.gameCount(), 1);
+
         vm.stopPrank();
     }
 
-    function testBetTokenAmount() public {
+    function testBet() public {
         vm.startPrank(creator);
 
         uint256 myGameId = proxyForTest.create(address(bc), 300, 100);
@@ -79,8 +80,19 @@ contract CasinoTest is Test {
 
         vm.startPrank(user1);
 
+        // invalid allowance
+        bc.approve(address(proxy), 1e17);
+        vm.expectRevert();
+        proxyForTest.bet(myGameId, 1 ether, 1, 123456789);
+
         // valid allowance
         bc.approve(address(proxy), 1 ether);
+        proxyForTest.bet(myGameId, 1 ether, 1, 123456789);
+        vm.assertEq(proxyForTest.Bettors(myGameId, user1).betAmount, 1 ether);
+
+        // bet again
+        bc.approve(address(proxy), 1 ether);
+        vm.expectRevert();
         proxyForTest.bet(myGameId, 1 ether, 1, 123456789);
 
         vm.stopPrank();
@@ -102,10 +114,14 @@ contract CasinoTest is Test {
 
         vm.roll(block.number + 150);
 
-        vm.expectRevert("now is not reveal term");
+        // reveal while betting time
+        vm.expectRevert();
         proxyForTest.reveal(myGameId, user1Commit);
 
         vm.roll(block.number + 150);
+
+        vm.expectRevert();
+        proxyForTest.reveal(myGameId, user1Commit-1);
 
         proxyForTest.reveal(myGameId, user1Commit);
 
@@ -115,8 +131,9 @@ contract CasinoTest is Test {
 
         vm.stopPrank();
 
+        // draw again
         vm.expectRevert();
-        proxyForTest.draw(myGameId); // try double draw
+        proxyForTest.draw(myGameId);
     }
 
     function testMulticall1() public {
@@ -124,12 +141,13 @@ contract CasinoTest is Test {
 
         bytes[] memory multicall_ = new bytes[](2);
 
-        multicall_[0] = abi.encodeWithSignature("create(address,uint256,uint256)", address(bc), 100, 30);   
-        // console.log("address : ", )
-        multicall_[1] = abi.encodeWithSignature("start(uint256)", 0);
+        multicall_[0] = abi.encodeWithSignature("create(address,uint256,uint256)", address(bc), 300, 100);   
+        multicall_[1] = abi.encodeWithSignature("start(uint256)", proxyForTest.gameCount());
 
         proxyForTest.multicall(multicall_);
+
         vm.stopPrank();
+        vm.assertEq(proxyForTest.gameCount(), 1);
     }
 
     function testMulticall2() public {
@@ -137,12 +155,13 @@ contract CasinoTest is Test {
 
         bytes[] memory multicall_ = new bytes[](2);
 
-        multicall_[0] = abi.encodeWithSignature("create(address,uint256,uint256)", address(bc), 100, 30);   
-        // console.log("address : ", )
+        multicall_[0] = abi.encodeWithSignature("create(address,uint256,uint256)", address(bc), 300, 100);   
         multicall_[1] = abi.encodeWithSignature("start(uint256)", 0);
 
         proxyForTest.multicall(multicall_);
+
         vm.stopPrank();
+        vm.assertEq(proxyForTest.gameCount(), 1);
 
 
         address creator2 = address(0x21);
@@ -150,12 +169,13 @@ contract CasinoTest is Test {
 
         bytes[] memory multicall2_ = new bytes[](2);
 
-        multicall2_[0] = abi.encodeWithSignature("create(address,uint256,uint256)", address(bc), 100, 30);   
-        // console.log("address : ", )
+        multicall2_[0] = abi.encodeWithSignature("create(address,uint256,uint256)", address(bc), 300, 100);   
         multicall2_[1] = abi.encodeWithSignature("start(uint256)", 1);
 
         proxyForTest.multicall(multicall2_);
+
         vm.stopPrank();
+        vm.assertEq(proxyForTest.gameCount(), 2);
 
 
         vm.startPrank(user1);
@@ -170,6 +190,9 @@ contract CasinoTest is Test {
 
         proxyForTest.multicall(multicall3_);
         vm.stopPrank();
+
+        vm.assertEq(proxyForTest.Bettors(0, user1).betAmount, 1 ether);
+        vm.assertEq(proxyForTest.Bettors(1, user1).betAmount, 1 ether);
     }
 
     function testAll() public {
@@ -180,7 +203,7 @@ contract CasinoTest is Test {
 
         vm.stopPrank();
 
-        // each user bets 1~10 (there is 1 winner)
+        // each user bets 1~10 (there must be 1 winner)
         for (uint i = 0; i < 10; i++) {
             vm.startPrank(users[i]);
 
@@ -193,15 +216,15 @@ contract CasinoTest is Test {
 
         vm.roll(block.number + 300);
 
+        // pause for 300 block
         vm.startPrank(ADMIN);
+
         proxyForTest.pause();
-        vm.stopPrank();
-
         vm.roll(block.number + 300);
-
-        vm.startPrank(ADMIN);
         proxyForTest.unpause();
+
         vm.stopPrank();
+
         // each user reveals
         for (uint i = 0; i < 10; i++) {
             vm.startPrank(users[i]);
@@ -215,10 +238,14 @@ contract CasinoTest is Test {
         vm.roll(block.number + 100);
 
         proxyForTest.draw(myGameId);
-        uint256 answer = proxyForTest.games(myGameId).answer;
+
+        console.log("answer : ", proxyForTest.Games(myGameId).answer);
+
+        uint256 answer = proxyForTest.Games(myGameId).answer;
         address winner = users[answer - 1];
 
         console.log("before claim : ", bc.balanceOf(winner));
+
         // each user claims
         for (uint i = 0; i < 10; i++) {
             vm.startPrank(users[i]);
@@ -232,7 +259,7 @@ contract CasinoTest is Test {
         
         // Winner
         uint256 winnerBetAmount = proxyForTest.Bettors(myGameId, winner).betAmount;
-        uint256 gameTotalBetBalance = proxyForTest.games(myGameId).totalBetBalance;
+        uint256 gameTotalBetBalance = proxyForTest.Games(myGameId).totalBetBalance;
         vm.assertEq(bc.balanceOf(winner), 1000*1e18 - winnerBetAmount + gameTotalBetBalance * (1000 - proxyForTest.gameFee()) / 1000);
 
         // Losers

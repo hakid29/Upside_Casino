@@ -13,8 +13,6 @@ interface ICasino {
     struct Game {
         State state;
         address creator;
-        bool draw;
-        uint256 totalBettor;
         uint256 totalBetBalance;
         uint256 answer;
         uint256 startBlock;
@@ -31,15 +29,13 @@ interface ICasino {
         bool revealed;
     }
 
-    function ADMIN() external view returns (address);
-
     function gameCount() external view returns (uint256);
 
     function gameFee() external view returns (uint256);
 
-    function games(uint256 gameId) external view returns (Game memory);
+    function Games(uint256 gameId) external view returns (Game memory);
 
-    function Bettors(uint256 gameId, address user) external view returns (Bettor memory);
+    function Bettors(uint256 gameId, address bettor) external view returns (Bettor memory);
 
     function EachGuessAmount(uint256 gameId, uint256 guess) external view returns (uint256);
 
